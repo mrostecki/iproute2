@@ -37,6 +37,8 @@
 #include <sys/sendfile.h>
 #include <sys/resource.h>
 
+#include <linux/perf_event.h>
+
 #include <arpa/inet.h>
 
 #include "utils.h"
@@ -98,16 +100,20 @@ static const struct bpf_prog_meta __bpf_prog_meta[] = {
 
 static const char *bpf_prog_to_subdir(enum bpf_prog_type type)
 {
-	assert(type < ARRAY_SIZE(__bpf_prog_meta) &&
-	       __bpf_prog_meta[type].subdir);
-	return __bpf_prog_meta[type].subdir;
+	if (type < ARRAY_SIZE(__bpf_prog_meta) &&
+	       __bpf_prog_meta[type].subdir)
+		return __bpf_prog_meta[type].subdir;
+	else
+		return "";
 }
 
 const char *bpf_prog_to_default_section(enum bpf_prog_type type)
 {
-	assert(type < ARRAY_SIZE(__bpf_prog_meta) &&
-	       __bpf_prog_meta[type].section);
-	return __bpf_prog_meta[type].section;
+	if (type < ARRAY_SIZE(__bpf_prog_meta) &&
+	       __bpf_prog_meta[type].section)
+		return __bpf_prog_meta[type].section;
+	else
+		return NULL;
 }
 
 #ifdef HAVE_ELF
@@ -1031,7 +1037,7 @@ int bpf_prog_detach_fd(int target_fd, enum bpf_attach_type type)
 
 int bpf_prog_load(enum bpf_prog_type type, const struct bpf_insn *insns,
 		  size_t size_insns, const char *license, char *log,
-		  size_t size_log)
+		  size_t size_log, uint32_t version_code)
 {
 	union bpf_attr attr = {};
 
@@ -1039,6 +1045,7 @@ int bpf_prog_load(enum bpf_prog_type type, const struct bpf_insn *insns,
 	attr.insns = bpf_ptr_to_u64(insns);
 	attr.insn_cnt = size_insns / sizeof(struct bpf_insn);
 	attr.license = bpf_ptr_to_u64(license);
+	attr.kern_version = version_code;
 
 	if (size_log > 0) {
 		attr.log_buf = bpf_ptr_to_u64(log);
@@ -1085,6 +1092,7 @@ struct bpf_elf_ctx {
 	char			license[ELF_MAX_LICENSE_LEN];
 	enum bpf_prog_type	type;
 	bool			verbose;
+	uint32_t		version_code;
 	struct bpf_elf_st	stat;
 	struct bpf_hash_entry	*ht[256];
 	char			*log;
@@ -1456,7 +1464,8 @@ static int bpf_prog_attach(const char *section,
 retry:
 	errno = 0;
 	fd = bpf_prog_load(prog->type, prog->insns, prog->size,
-			   prog->license, ctx->log, ctx->log_size);
+			   prog->license, ctx->log, ctx->log_size,
+			   ctx->version_code);
 	if (fd < 0 || ctx->verbose) {
 		/* The verifier log is pretty chatty, sometimes so chatty
 		 * on larger programs, that we could fail to dump everything
@@ -1852,6 +1861,17 @@ static int bpf_fetch_license(struct bpf_elf_ctx *ctx, int section,
 	return 0;
 }
 
+static int bpf_fetch_version(struct bpf_elf_ctx *ctx, int section,
+			     struct bpf_elf_sec_data *data)
+{
+	if (data->sec_data->d_size > sizeof(ctx->version_code))
+		return -ENOMEM;
+
+	memcpy(&ctx->version_code, data->sec_data->d_buf, data->sec_data->d_size);
+	ctx->sec_done[section] = true;
+	return 0;
+}
+
 static int bpf_fetch_symtab(struct bpf_elf_ctx *ctx, int section,
 			    struct bpf_elf_sec_data *data)
 {
@@ -1890,6 +1910,9 @@ static int bpf_fetch_ancillary(struct bpf_elf_ctx *ctx)
 		else if (data.sec_hdr.sh_type == SHT_PROGBITS &&
 			 !strcmp(data.sec_name, ELF_SECTION_LICENSE))
 			ret = bpf_fetch_license(ctx, i, &data);
+		else if (data.sec_hdr.sh_type == SHT_PROGBITS &&
+			 !strcmp(data.sec_name, ELF_SECTION_VERSION))
+			ret = bpf_fetch_version(ctx, i, &data);
 		else if (data.sec_hdr.sh_type == SHT_SYMTAB &&
 			 !strcmp(data.sec_name, ".symtab"))
 			ret = bpf_fetch_symtab(ctx, i, &data);
@@ -2219,6 +2242,114 @@ static int bpf_fill_prog_arrays(struct bpf_elf_ctx *ctx)
 	return 0;
 }
 
+/* Just an ugly hack for now. */
+static inline int
+sys_perf_event_open(struct perf_event_attr *attr,
+		      pid_t pid, int cpu, int group_fd,
+		      unsigned long flags)
+{
+	int fd;
+
+	fd = syscall(__NR_perf_event_open, attr, pid, cpu,
+		     group_fd, flags);
+	return fd;
+}
+
+static int bpf_add_debug_probes(struct bpf_elf_ctx *ctx)
+{
+	struct bpf_elf_sec_data data;
+	struct perf_event_attr attr;
+	enum bpf_prog_type type, old;
+	const char *sec_name;
+	int fd, i, ret, efd, err, id;
+	char buf[256];
+
+	for (i = 1; i < ctx->elf_hdr.e_shnum; i++) {
+		if (ctx->sec_done[i])
+			continue;
+
+		ret = bpf_fill_section_data(ctx, i, &data);
+		if (ret < 0)
+			continue;
+
+		sec_name = data.sec_name;
+		if (strncmp(sec_name, "tracepoint/", 11) == 0) {
+			type = BPF_PROG_TYPE_KPROBE;
+			sec_name += 11;
+			assert(0); //TODO
+		} else if(strncmp(sec_name, "kretprobe/", 10) == 0) {
+			type = BPF_PROG_TYPE_KPROBE;
+			sec_name += 10;
+		} else if(strncmp(sec_name, "kprobes/", 8) == 0) {
+			type = BPF_PROG_TYPE_KPROBE;
+			sec_name += 8;
+		} else {
+			continue;
+		}
+
+		assert(strlen(sec_name));
+
+		old = ctx->type;
+		ctx->type = type;
+		fd = bpf_fetch_prog_sec(ctx, data.sec_name);
+		ctx->type = old;
+		if (fd < 0)
+			return -EIO;
+
+		memset(&attr, 0, sizeof(attr));
+		attr.type = PERF_TYPE_TRACEPOINT;
+		attr.sample_type = PERF_SAMPLE_RAW;
+		attr.sample_period = 1;
+		attr.wakeup_events = 1;
+
+		snprintf(buf, sizeof(buf),
+			 "echo '%c:%s %s' >> /sys/kernel/debug/tracing/kprobe_events",
+			 type == BPF_PROG_TYPE_TRACEPOINT ? 'r' : 'p', sec_name, sec_name);
+		err = system(buf);
+		if (err < 0) {
+			fprintf(stderr, "failed to create kprobe '%s' error '%s'\n",
+				sec_name, strerror(errno));
+			return -1;
+		}
+
+		strcpy(buf, "/sys/kernel/debug/tracing/");
+		strcat(buf, "events/kprobes/");
+		strcat(buf, sec_name);
+		strcat(buf, "/id");
+
+		efd = open(buf, O_RDONLY, 0);
+		if (efd < 0) {
+			printf("failed to open event %s\n", sec_name);
+			return -1;
+		}
+
+		err = read(efd, buf, sizeof(buf));
+		if (err < 0 || err >= sizeof(buf)) {
+			printf("read from '%s' failed '%s'\n", sec_name, strerror(errno));
+			return -1;
+		}
+
+		close(efd);
+
+		buf[err] = 0;
+		id = atoi(buf);
+		attr.config = id;
+
+		efd = sys_perf_event_open(&attr, -1, 0, -1, 0);
+		if (efd < 0) {
+			printf("event %d fd %d err %s\n", id, efd, strerror(errno));
+			return -1;
+		}
+
+		ioctl(efd, PERF_EVENT_IOC_ENABLE, 0);
+		ioctl(efd, PERF_EVENT_IOC_SET_BPF, fd);
+
+		ctx->sec_done[i] = true;
+	}
+
+	return 0;
+}
+
 static void bpf_save_finfo(struct bpf_elf_ctx *ctx)
 {
 	struct stat st;
@@ -2504,16 +2635,24 @@ static int bpf_obj_open(const char *pathname, enum bpf_prog_type type,
 		goto out;
 	}
 
-	fd = bpf_fetch_prog_sec(ctx, section);
-	if (fd < 0) {
-		fprintf(stderr, "Error fetching program/map!\n");
-		ret = fd;
-		goto out;
+	if (section) {
+		fd = bpf_fetch_prog_sec(ctx, section);
+		if (fd < 0) {
+			fprintf(stderr, "Error fetching program/map!\n");
+			ret = fd;
+			goto out;
+		}
+
+		ret = bpf_fill_prog_arrays(ctx);
+		if (ret < 0)
+			fprintf(stderr, "Error filling program arrays!\n");
 	}
 
-	ret = bpf_fill_prog_arrays(ctx);
-	if (ret < 0)
-		fprintf(stderr, "Error filling program arrays!\n");
+	if (!section) {
+		ret = bpf_add_debug_probes(ctx);
+		if (ret < 0)
+			fprintf(stderr, "Error adding debug probes!\n");
+	}
 out:
 	bpf_elf_ctx_destroy(ctx, ret < 0);
 	if (ret < 0) {

@@ -28,6 +28,7 @@ static void explain(void)
 {
 	fprintf(stderr, "Usage: ... bpf [ import UDS_FILE ] [ run CMD ]\n");
 	fprintf(stderr, "       ... bpf [ debug ]\n");
+	fprintf(stderr, "       ... bpf [ probes ] [ object-file OBJ_FILE ]\n");
 	fprintf(stderr, "       ... bpf [ graft MAP_FILE ] [ key KEY ]\n");
 	fprintf(stderr, "          `... [ object-file OBJ_FILE ] [ type TYPE ] [ section NAME ] [ verbose ]\n");
 	fprintf(stderr, "          `... [ object-pinned PROG_FILE ]\n");
@@ -51,6 +52,14 @@ static int bpf_num_env_entries(void)
 	return num;
 }
 
+static void bpf_ebpf_cb(void *nl, int fd, const char *annotation)
+{
+}
+
+static const struct bpf_cfg_ops bpf_cb_ops = {
+        .ebpf_cb = bpf_ebpf_cb,
+};
+
 static int parse_bpf(struct exec_util *eu, int argc, char **argv)
 {
 	char **argv_run = argv_default, **envp_run, *tmp;
@@ -58,6 +67,7 @@ static int parse_bpf(struct exec_util *eu, int argc, char **argv)
 	const char *bpf_uds_name = NULL;
 	int fds[BPF_SCM_MAX_FDS] = {};
 	struct bpf_map_aux aux = {};
+	struct bpf_cfg_in cfg = {};
 
 	if (argc == 0)
 		return 0;
@@ -76,6 +86,17 @@ static int parse_bpf(struct exec_util *eu, int argc, char **argv)
 				fprintf(stderr,
 					"No trace pipe, tracefs not mounted?\n");
 			return -1;
+		} else if (matches(*argv, "probes") == 0) {
+			NEXT_ARG();
+			cfg.argc = argc;
+			cfg.argv = argv;
+			ret = bpf_parse_common(42, &cfg, &bpf_cb_ops, NULL);
+			if (!ret) {
+				fprintf(stderr, "Loaded! Hang up with ^C!\n\n");
+				while (1)
+					sleep(1);
+			}
+			return 0;
 		} else if (matches(*argv, "graft") == 0) {
 			const char *bpf_map_path;
 			bool has_key = false;

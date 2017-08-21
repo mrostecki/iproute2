@@ -15,6 +15,7 @@
 #include <linux/filter.h>
 
 #include <asm/byteorder.h>
+//#include <asm/ptrace.h>
 
 #include "bpf_elf.h"
 
@@ -97,6 +98,11 @@
 	__section(ELF_SECTION_LICENSE)
 #endif
 
+#ifndef __section_version
+# define __section_version						\
+	__section(ELF_SECTION_VERSION)
+#endif
+
 #ifndef __section_maps
 # define __section_maps							\
 	__section(ELF_SECTION_MAPS)
@@ -107,6 +113,14 @@
 #ifndef BPF_LICENSE
 # define BPF_LICENSE(NAME)						\
 	char ____license[] __section_license = NAME
+#endif
+
+#define __BPF_KERNEL_VERSION(x, y, z)					\
+	(((x) << 16) + ((y) << 8) + (z))
+
+#ifndef BPF_KERNEL_VERSION
+# define BPF_KERNEL_VERSION(x, y, z)					\
+	int ____version __section_version = __BPF_KERNEL_VERSION((x), (y), (z))
 #endif
 
 /** Classifier helper */
@@ -126,6 +140,9 @@
 # define BPF_FUNC(NAME, ...)						\
 	__BPF_FUNC(NAME, __VA_ARGS__) = (void *) BPF_FUNC_##NAME
 #endif
+
+static int (*bpf_probe_read)(void *dst, int size, void *unsafe_ptr) =
+	(void *) BPF_FUNC_probe_read;
 
 /* Map access/manipulation */
 static void *BPF_FUNC(map_lookup_elem, void *map, const void *key);
@@ -257,5 +274,61 @@ unsigned long long load_half(void *skb, unsigned long long off)
 
 unsigned long long load_word(void *skb, unsigned long long off)
 	asm ("llvm.bpf.load.word");
+
+struct pt_regs {
+/*
+ * C ABI says these regs are callee-preserved. They aren't saved on kernel entry
+ * unless syscall needs a complete, fully filled "struct pt_regs".
+ */
+	unsigned long r15;
+	unsigned long r14;
+	unsigned long r13;
+	unsigned long r12;
+	unsigned long bp;
+	unsigned long bx;
+/* These regs are callee-clobbered. Always saved on kernel entry. */
+	unsigned long r11;
+	unsigned long r10;
+	unsigned long r9;
+	unsigned long r8;
+	unsigned long ax;
+	unsigned long cx;
+	unsigned long dx;
+	unsigned long si;
+	unsigned long di;
+/*
+ * On syscall entry, this is syscall#. On CPU exception, this is error code.
+ * On hw interrupt, it's IRQ number:
+ */
+	unsigned long orig_ax;
+/* Return frame for iretq */
+	unsigned long ip;
+	unsigned long cs;
+	unsigned long flags;
+	unsigned long sp;
+	unsigned long ss;
+/* top of stack page */
+};
+
+
+#define PT_REGS_PARM1(x) ((x)->di)
+#define PT_REGS_PARM2(x) ((x)->si)
+#define PT_REGS_PARM3(x) ((x)->dx)
+#define PT_REGS_PARM4(x) ((x)->cx)
+#define PT_REGS_PARM5(x) ((x)->r8)
+#define PT_REGS_RET(x) ((x)->sp)
+#define PT_REGS_FP(x) ((x)->bp)
+#define PT_REGS_RC(x) ((x)->ax)
+#define PT_REGS_SP(x) ((x)->sp)
+#define PT_REGS_IP(x) ((x)->ip)
+
+#define BPF_KPROBE_READ_RET_IP(ip, ctx)		({				\
+		bpf_probe_read(&(ip), sizeof(ip), (void *)PT_REGS_RET(ctx)); })
+
+#define BPF_KRETPROBE_READ_RET_IP(ip, ctx)	({				\
+		bpf_probe_read(&(ip), sizeof(ip),				\
+				(void *)(PT_REGS_FP(ctx) + sizeof(ip))); })
+
+#define bpf_walk(P) ({typeof(P) val = 0; bpf_probe_read(&val, sizeof(val), &P); val;})
 
 #endif /* __BPF_API__ */

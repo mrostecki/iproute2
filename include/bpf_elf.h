@@ -14,6 +14,7 @@
 
 /* ELF section names, etc */
 #define ELF_SECTION_LICENSE	"license"
+#define ELF_SECTION_VERSION	"version"
 #define ELF_SECTION_MAPS	"maps"
 #define ELF_SECTION_PROG	"prog"
 #define ELF_SECTION_CLASSIFIER	"classifier"
