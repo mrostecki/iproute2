@@ -106,6 +106,17 @@ static int tc_qdisc_modify(int cmd, unsigned int flags, int argc, char **argv)
 			req.t.tcm_handle = TC_H_MAKE(TC_H_INGRESS, 0);
 			NEXT_ARG_FWD();
 			break;
+		} else if (strcmp(*argv, "bpf") == 0) {
+			if (req.t.tcm_parent) {
+				fprintf(stderr, "Error: \"bpf\" is a duplicate parent ID\n");
+				return -1;
+			}
+			req.t.tcm_parent = TC_H_CLSACT;
+			strncpy(k, "bpf", sizeof(k) - 1);
+			q = get_qdisc_kind(k);
+			req.t.tcm_handle = TC_H_MAKE(TC_H_CLSACT, 0);
+			NEXT_ARG_FWD();
+			break;
 		} else if (strcmp(*argv, "parent") == 0) {
 			__u32 handle;
 

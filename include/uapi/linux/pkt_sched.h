@@ -871,4 +871,22 @@ struct tc_pie_xstats {
 	__u32 maxq;             /* maximum queue size */
 	__u32 ecn_mark;         /* packets marked with ecn*/
 };
+
+/* BPF */
+
+enum {
+       TCA_BPF_PARMS_INGRESS = 1,
+       TCA_BPF_PARMS_EGRESS,
+       __TCA_BPF_SCH_MAX,
+};
+
+#define TCA_BPF_SCH_MAX                (__TCA_BPF_SCH_MAX - 1)
+
+enum {
+       TCA_BPF_PARMS_PROG = 1,
+       __TCA_BPF_PARMS_MAX,
+};
+
+#define TCA_BPF_PARMS_MAX      (__TCA_BPF_PARMS_MAX - 1)
+
 #endif
