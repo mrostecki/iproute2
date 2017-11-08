@@ -67,6 +67,7 @@ TCMODULES += q_fq.o
 TCMODULES += q_pie.o
 TCMODULES += q_hhf.o
 TCMODULES += q_clsact.o
+TCMODULES += q_bpf.o
 TCMODULES += e_bpf.o
 TCMODULES += f_matchall.o
 
