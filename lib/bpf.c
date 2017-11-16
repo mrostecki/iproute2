@@ -1057,6 +1057,7 @@ int bpf_prog_load(enum bpf_prog_type type, const struct bpf_insn *insns,
 	attr.insns = bpf_ptr_to_u64(insns);
 	attr.insn_cnt = size_insns / sizeof(struct bpf_insn);
 	attr.license = bpf_ptr_to_u64(license);
+	attr.prog_target_ifindex = 7;
 
 	if (size_log > 0) {
 		attr.log_buf = bpf_ptr_to_u64(log);
