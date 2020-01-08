@@ -1311,7 +1311,7 @@ bpf_dump_error(struct bpf_elf_ctx *ctx, const char *format, ...)
 
 static int bpf_log_realloc(struct bpf_elf_ctx *ctx)
 {
-	const size_t log_max = UINT_MAX >> 8;
+	const size_t log_max = UINT_MAX >> 2;
 	size_t log_size = ctx->log_size;
 	char *ptr;
 
